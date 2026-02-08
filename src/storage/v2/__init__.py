@@ -87,6 +87,7 @@ class ChunkInfo:
     compressed_size: int
     is_delta: bool = False
     base_digest: Optional[str] = None  # For delta chunks
+    path: Optional[str] = None  # File path this chunk belongs to
 
 
 @dataclass
@@ -290,6 +291,8 @@ class BlockStore:
         self.s3_bucket = s3_bucket
         self.s3_region = s3_region
         self.redis_url = redis_url
+        self._s3_client = None  # Initialize for check
+        self._redis_client = None  # Initialize for check
 
         # In-memory index for O(1) lookup
         self._block_index: Dict[str, BlockMetadata] = {}
@@ -298,10 +301,6 @@ class BlockStore:
 
         # Rolling hash for CDC
         self._cdc = RollingHash()
-
-        # Compression contexts (reused for performance)
-        self._lz4_compressor = lz4.frame.FrameCompressor()
-        self._zstd_compressor = zstandard.ZstdCompressor(level=3)
 
         # Async executor for I/O
         self._executor = asyncio.Semaphore(32)
