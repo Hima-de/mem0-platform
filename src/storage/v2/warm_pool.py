@@ -848,7 +848,7 @@ class WarmPoolManager:
         Request a sandbox from the warm pool.
 
         Returns:
-            Tuple of (request_id, is_warm)
+            Tuple of (snapshot_id, is_warm)
 
         If is_warm=True, sandbox is ready immediately.
         If is_warm=False, sandbox is being prepared.
@@ -867,21 +867,58 @@ class WarmPoolManager:
 
             return warm_snapshot.snapshot_id, True
 
-        # Need to create/restore snapshot
-        request_id = f"rst_{uuid.uuid4().hex[:12]}"
+        # Create a real snapshot synchronously (not a request_id)
+        snapshot_id = f"snap_{uuid.uuid4().hex[:12]}"
 
-        request = RestoreRequest(
-            request_id=request_id,
+        # Generate default files for the runtime
+        files = self._get_runtime_files(runtime)
+
+        # Create the snapshot in the engine
+        actual_snapshot_id = await self.snapshot_engine.create_snapshot(user_id, files)
+
+        # Add to pool as a warm snapshot
+        snapshot = WarmSnapshot(
+            snapshot_id=actual_snapshot_id,
             runtime=runtime,
             user_id=user_id,
             tenant_id=tenant_id,
+            created_at=datetime.utcnow(),
+            last_used=datetime.utcnow(),
+            use_count=1,
+            hot_score=0.8,
             priority=priority,
-            deadline_ms=deadline_ms,
+            restore_time_ms=10.0,
         )
 
-        await self._scheduler.schedule(request)
+        self._pool[actual_snapshot_id] = snapshot
+        self._runtime_pool[runtime].append(actual_snapshot_id)
+        self._user_snapshots[user_id] = actual_snapshot_id
 
-        return request_id, False
+        return actual_snapshot_id, False
+
+    def _get_runtime_files(self, runtime: RuntimeType) -> Dict[str, bytes]:
+        """Generate default files for a runtime."""
+        files = {f"README.md": f"# {runtime.value}\n\nAuto-generated sandbox.".encode()}
+
+        if runtime == RuntimeType.PYTHON_ML:
+            files["requirements.txt"] = b"numpy>=1.24\npandas>=2.0\ntorch>=2.0\n"
+            files["main.py"] = b"import numpy as np\nprint('Python ML sandbox ready')\n"
+
+        elif runtime == RuntimeType.PYTHON_DATA:
+            files["requirements.txt"] = b"numpy>=1.24\npandas>=2.0\nscipy>=1.10\n"
+            files["main.py"] = b"import pandas as pd\nprint('Data sandbox ready')\n"
+
+        elif runtime == RuntimeType.PYTHON_WEB:
+            files["requirements.txt"] = b"fastapi>=0.100\nuvicorn>=0.23\n"
+            files["main.py"] = (
+                b"from fastapi import FastAPI\napp = FastAPI()\n@app.get('/')\ndef hello():\n    return {'status': 'ready'}\n"
+            )
+
+        elif runtime == RuntimeType.NODE_WEB:
+            files["package.json"] = b'{"name":"node-sandbox","main":"index.js"}\n'
+            files["index.js"] = b'console.log("Node.js sandbox ready");\n'
+
+        return files
 
     async def _find_warm_snapshot(self, user_id: str, runtime: RuntimeType) -> Optional[WarmSnapshot]:
         """Find an available warm snapshot."""
